@@ -338,37 +338,27 @@ class WebVisualEditor {
     }
   }
   // Update text children in place, without touching the containing element
-  applyTextPatch({ targetStart, childIndex, text, textChildren, editStart, offsetDelta }) {
+  applyTextPatch({ targetStart, textChildren, editStart, offsetDelta }) {
     const target = document.querySelector(`[data-wve-code-start="${targetStart}"]`);
-    if (textChildren) {
-      if (!target) {
-        vscode.postMessage({ type: 'refresh' });
-        return;
-      }
-      const desired = new Map(textChildren.map(({ index, text }) => [index, text]));
-      for (let i = target.childNodes.length - 1; i >= 0; i--) {
-        const node = target.childNodes[i];
-        if (node.nodeType === Node.TEXT_NODE && !desired.has(i)) {
-          node.remove();
-        }
-      }
-      [...desired.entries()].sort(([a], [b]) => a - b).forEach(([index, value]) => {
-        const node = target.childNodes[index];
-        if (node?.nodeType === Node.TEXT_NODE) {
-          node.data = value;
-        } else {
-          target.insertBefore(document.createTextNode(value), node ?? null);
-        }
-      });
-      this.shiftCodePositions(editStart, offsetDelta);
-      return;
-    }
-    const textNode = target?.childNodes[childIndex];
-    if (!textNode || textNode.nodeType !== Node.TEXT_NODE) {
+    if (!target) {
       vscode.postMessage({ type: 'refresh' });
       return;
     }
-    textNode.data = text;
+    const desired = new Map(textChildren.map(({ index, text }) => [index, text]));
+    for (let i = target.childNodes.length - 1; i >= 0; i--) {
+      const node = target.childNodes[i];
+      if (node.nodeType === Node.TEXT_NODE && !desired.has(i)) {
+        node.remove();
+      }
+    }
+    [...desired.entries()].sort(([a], [b]) => a - b).forEach(([index, value]) => {
+      const node = target.childNodes[index];
+      if (node?.nodeType === Node.TEXT_NODE) {
+        node.data = value;
+      } else {
+        target.insertBefore(document.createTextNode(value), node ?? null);
+      }
+    });
     this.shiftCodePositions(editStart, offsetDelta);
   }
   // Replace the element at targetStart with new HTML from a single-element source edit

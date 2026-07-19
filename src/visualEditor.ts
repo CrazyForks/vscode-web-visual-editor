@@ -593,33 +593,26 @@ export class VisualEditorProvider implements vscode.CustomTextEditorProvider {
     if (targetLocation.startTag && targetLocation.endTag) {
       const contentStart = targetLocation.startTag.endOffset;
       const contentEnd = targetLocation.endTag.startOffset;
-      if (editStart >= contentStart && editEnd <= contentEnd) {
-        const childIndex = Array.from(target.childNodes).findIndex(node => {
-          if (node.nodeType !== target.TEXT_NODE) { return false; }
-          const loc = dom.nodeLocation(node);
-          if (!loc) { return false; }
-          return loc.startOffset <= editStart && editEnd <= loc.endOffset;
+      if (
+        editStart >= contentStart && editEnd <= contentEnd
+        && this.isTextPatchSafe(oldDom, dom, oldTarget, target, change, offsetDelta)
+      ) {
+        const textChildren = Array.from(target.childNodes).flatMap((node, index) => {
+          return node.nodeType === node.TEXT_NODE
+            ? [{ index, text: (node as Text).data }]
+            : [];
         });
-        if (this.isTextPatchSafe(oldDom, dom, oldTarget, target, change, offsetDelta)) {
-          const textChildren = Array.from(target.childNodes).flatMap((node, index) => {
-            return node.nodeType === node.TEXT_NODE
-              ? [{ index, text: (node as Text).data }]
-              : [];
-          });
-          webview.postMessage({
-            type: 'patch',
-            data: {
-              mode: 'text',
-              targetStart: targetLocation.startOffset,
-              childIndex,
-              text: childIndex === -1 ? '' : (target.childNodes[childIndex] as Text).data,
-              textChildren,
-              editStart,
-              offsetDelta
-            }
-          });
-          return true;
-        }
+        webview.postMessage({
+          type: 'patch',
+          data: {
+            mode: 'text',
+            targetStart: targetLocation.startOffset,
+            textChildren,
+            editStart,
+            offsetDelta
+          }
+        });
+        return true;
       }
     }
     if (!this.isElementPatchSafe(oldDom, dom, oldTarget, target, change, offsetDelta)) {
