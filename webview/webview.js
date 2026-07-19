@@ -45,36 +45,37 @@ class WebVisualEditor {
   }
 
   initMovables() {
-    this.userElements.forEach(el => {
-      const styles = el.computedStyleMap();
-      const position = styles.get('position').value;
-      if (position === 'static' || position === 'sticky') { return; }
-      const props = {
-        left: styles.get('left'), right: styles.get('right'),
-        top: styles.get('top'), bottom: styles.get('bottom')
-      };
-      // Ignore if both left & right, top & bottom are specified
-      if ((props.left.value !== 'auto' && props.right.value !== 'auto')
-        || (props.top.value !== 'auto' && props.bottom.value !== 'auto')) {
-        return;
-      }
-      // Default to left, top if not specified
-      const propX = props.left.value !== 'auto' ? 'left' : props.right.value !== 'auto' ? 'right' : 'left';
-      const propY = props.top.value !== 'auto' ? 'top' : props.bottom.value !== 'auto' ? 'bottom' : 'top';
-      const x = props[propX];
-      const y = props[propY];
-      // Ignore units except for px
-      if ((x.value !== 'auto' && x.unit !== 'px') || (y.value !== 'auto' && y.unit !== 'px')) {
-        return;
-      }
-      el.setAttribute('wve-movable', '');
-      el.setAttribute('draggable', 'false');
-      el.dataset.wvePropX = propX;
-      el.dataset.wvePropY = propY;
-      if (x.value !== 'auto') { el.style[propX] = x.toString(); }
-      if (y.value !== 'auto') { el.style[propY] = y.toString(); }
-      this.movables.push(el);
-    });
+    this.userElements.forEach(el => this.registerMovableIfApplicable(el));
+  }
+  registerMovableIfApplicable(el) {
+    const styles = el.computedStyleMap();
+    const position = styles.get('position').value;
+    if (position === 'static' || position === 'sticky') { return; }
+    const props = {
+      left: styles.get('left'), right: styles.get('right'),
+      top: styles.get('top'), bottom: styles.get('bottom')
+    };
+    // Ignore if both left & right, top & bottom are specified
+    if ((props.left.value !== 'auto' && props.right.value !== 'auto')
+      || (props.top.value !== 'auto' && props.bottom.value !== 'auto')) {
+      return;
+    }
+    // Default to left, top if not specified
+    const propX = props.left.value !== 'auto' ? 'left' : props.right.value !== 'auto' ? 'right' : 'left';
+    const propY = props.top.value !== 'auto' ? 'top' : props.bottom.value !== 'auto' ? 'bottom' : 'top';
+    const x = props[propX];
+    const y = props[propY];
+    // Ignore units except for px
+    if ((x.value !== 'auto' && x.unit !== 'px') || (y.value !== 'auto' && y.unit !== 'px')) {
+      return;
+    }
+    el.setAttribute('wve-movable', '');
+    el.setAttribute('draggable', 'false');
+    el.dataset.wvePropX = propX;
+    el.dataset.wvePropY = propY;
+    if (x.value !== 'auto') { el.style[propX] = x.toString(); }
+    if (y.value !== 'auto') { el.style[propY] = y.toString(); }
+    this.movables.push(el);
   }
   initSelector() {
     this.selector = document.createElement('div');
@@ -315,6 +316,90 @@ class WebVisualEditor {
 
   // Event handlers
   // NOTE Define as arrow functions so that `this` is correctly referenced
+
+  // Shift code positions of every tracked element affected by an edit that started
+  // at `editStart`, excluding elements whose positions were already set to fresh
+  // values (e.g. a just-replaced subtree)
+  shiftCodePositions(editStart, offsetDelta, exclude = null) {
+    this.userElements.forEach(el => {
+      if (exclude && exclude.has(el)) { return; }
+      const start = +el.dataset.wveCodeStart;
+      const end = +el.dataset.wveCodeEnd;
+      if (!Number.isNaN(start) && start > editStart) { el.dataset.wveCodeStart = start + offsetDelta; }
+      if (!Number.isNaN(end) && end > editStart) { el.dataset.wveCodeEnd = end + offsetDelta; }
+    });
+  }
+  // Apply a patch from the extension for a single content change
+  applyPatch(data) {
+    if (data.mode === 'text') {
+      this.applyTextPatch(data);
+    } else {
+      this.applyElementPatch(data);
+    }
+  }
+  // Update text children in place, without touching the containing element
+  applyTextPatch({ targetStart, childIndex, text, textChildren, editStart, offsetDelta }) {
+    const target = document.querySelector(`[data-wve-code-start="${targetStart}"]`);
+    if (textChildren) {
+      if (!target) {
+        vscode.postMessage({ type: 'refresh' });
+        return;
+      }
+      const desired = new Map(textChildren.map(({ index, text }) => [index, text]));
+      for (let i = target.childNodes.length - 1; i >= 0; i--) {
+        const node = target.childNodes[i];
+        if (node.nodeType === Node.TEXT_NODE && !desired.has(i)) {
+          node.remove();
+        }
+      }
+      [...desired.entries()].sort(([a], [b]) => a - b).forEach(([index, value]) => {
+        const node = target.childNodes[index];
+        if (node?.nodeType === Node.TEXT_NODE) {
+          node.data = value;
+        } else {
+          target.insertBefore(document.createTextNode(value), node ?? null);
+        }
+      });
+      this.shiftCodePositions(editStart, offsetDelta);
+      return;
+    }
+    const textNode = target?.childNodes[childIndex];
+    if (!textNode || textNode.nodeType !== Node.TEXT_NODE) {
+      vscode.postMessage({ type: 'refresh' });
+      return;
+    }
+    textNode.data = text;
+    this.shiftCodePositions(editStart, offsetDelta);
+  }
+  // Replace the element at targetStart with new HTML from a single-element source edit
+  applyElementPatch({ targetStart, html, editStart, offsetDelta }) {
+    const target = document.querySelector(`[data-wve-code-start="${targetStart}"]`);
+    const startIndex = target ? this.userElements.indexOf(target) : -1;
+    if (startIndex === -1) {
+      vscode.postMessage({ type: 'refresh' });
+      return;
+    }
+    const stale = [target, ...target.querySelectorAll('*')];
+    const staleSet = new Set(stale);
+    stale.forEach(el => {
+      this.selected.delete(el);
+      if (wve.config.enableMovingElements) { this.movers.delete(el); }
+    });
+    if (wve.config.enableMovingElements) {
+      this.movables = this.movables.filter(el => !staleSet.has(el));
+      if (this.movers.size < 2) { this.toolbarGroupAlign.setAttribute('disabled', ''); }
+    }
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = html;
+    const replacement = wrapper.firstElementChild;
+    target.replaceWith(replacement);
+    const newElements = [replacement, ...replacement.querySelectorAll('*')];
+    this.userElements.splice(startIndex, stale.length, ...newElements);
+    this.shiftCodePositions(editStart, offsetDelta, new Set(newElements));
+    if (wve.config.enableMovingElements) {
+      newElements.forEach(el => this.registerMovableIfApplicable(el));
+    }
+  }
 
   // Draw a rectangle of the selection area
   drawSelector = () => {
@@ -665,6 +750,9 @@ document.addEventListener('DOMContentLoaded', async () => {
           element.setAttribute('data-wve-code-start', start);
           element.setAttribute('data-wve-code-end', end);
         });
+        break;
+      case 'patch':
+        app.applyPatch(data);
         break;
       case 'select':
         if (!app.linkCode) { return; }
